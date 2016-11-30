@@ -15,4 +15,14 @@
 //}
 print_r ($wall);
 //echo PHP_VERSION;
+
+/* how decode and encode JSON:
+<?php
+$json_string='{"id":1,"name":"ivan","country":"Russia","office":["yandex"," management"]} ';
+$obj=json_decode($json_string);
+echo $obj->name. '<br>';
+foreach ($obj->office as $val)
+echo $val;
+?>
+*/
 ?>
