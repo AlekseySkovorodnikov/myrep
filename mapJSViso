@@ -1,0 +1,56 @@
+var props = {
+    center: [48.77, 44.78],
+    zoom: 12
+};
+
+var mapid = w.general.renderTo;
+if (window["map-" + mapid]) {
+    window["map-" + mapid].remove();
+    window["map-" + mapid] = null;
+}
+
+var map = L.map(mapid).setView(props.center, props.zoom);
+window["map-" + mapid] = map;
+
+L.tileLayer('https://api.tiles.mapbox.com/v4/{id}/{z}/{x}/{y}.png?access_token=pk.eyJ1IjoibWFwYm94IiwiYSI6ImNpejY4NXVycTA2emYycXBndHRqcmZ3N3gifQ.rJcFIG214AriISLbB6B5aw', {
+  maxZoom: 18,
+  attribution: 'Map data &copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a> contributors, ' +
+    '<a href="https://creativecommons.org/licenses/by-sa/2.0/">CC-BY-SA</a>, ' +
+    'Imagery © <a href="https://www.mapbox.com/">Mapbox</a>',
+  id: 'mapbox.streets'
+}).addTo(map);
+
+map.on('click', function(e){
+    debugger
+  console.log(e.latlng);
+});
+
+var arr = [];
+w.data.rows.forEach(function(r, i){
+    var v = w.data.values;
+    var IdCam        = r[0];
+    var lon         = parseFloat(r[6]);
+    var lat         = parseFloat(r[7]);
+    var name        = r[1];
+
+    var nameIdMap   = r[2];
+    var idCam = r[0];
+    var origin    = r[5];
+    var adress    = r[4];
+    
+    var tooltip_text = `<b>Имя:</b> ${name} 
+                        <br/><b>Адрес камеры:</b> ${adress}
+                        `;
+                        // <br/><b>ID  камеры:</b> ${idCam}
+                        // <br/><b>Ссылка для прямого вызова с бакенд серверов:</b> ${origin}
+                        // <br/><b>Код территории:</b> ${nameIdMap}
+    if (lat>0 && lon>0){
+        arr.push(L.marker([lat, lon]).bindPopup(tooltip_text)
+        .on('click', function(e) {
+                visApi().setFilterSelectedValues("2154bb4d13974c6887db809dfbeb915a", [[IdCam]], function (response) {});
+            }))
+    }
+    
+});
+var layerGroup = L.layerGroup(arr);
+layerGroup.addTo(map);
