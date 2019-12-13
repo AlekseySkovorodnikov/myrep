@@ -1,0 +1,74 @@
+import json
+import requests
+import sys
+
+domain = "camera.volganet.ru"
+password = "rekG>k"
+login = "anufriev@iskrauraltel.ru"
+key = '034dcc8c-ce32-48da-9f9f-961e1ee8aa34'
+
+#1.  Пройти авторизацию
+#https://camera.volganet.ru/api/v1/login
+
+#2.  Получение списка камер
+#GET https://camera.volganet.ru/api/v1/cameras
+
+#3.  Получить ссылку на встроенный проигрыватель
+#GET https://camera.volganet.ru/cameras/subscribe/1065
+
+#в ответе JSON которого будет токен доступа проигрывателю GET
+#/cameras/player/1065?publictoken={token}.
+
+
+def getTokenAuthorization():
+	formdata = {
+		'login': login,
+		'password': password,
+		"key": key,
+		"format": "bearer"
+	}
+	response = requests.post("https://" + domain + "/api/v1/login", formdata)
+	return response.cookies
+Cookies = getTokenAuthorization()
+
+def getCamers():
+	response = requests.post("https://" + domain + "/api/v1/cameras", cookies = Cookies)
+	return json.loads(response.content.decode())
+camers = getCamers()
+
+
+if not 'myFilter' in locals():
+	#-Фильтр-
+	myFilter = Filter()
+	myFilter.selected = [[]]
+	myFilter.rows = []
+for dimensionElement in camers:
+	myFilter.rows.append([dimensionElement['id']])
+
+#-Ссылка на поток-
+my_video = DataFrame()
+my_video.values = [[]]
+my_video.cols = [['Ссылка']]
+my_video.rows = []
+
+if myFilter.selected:
+	response1 = requests.post("https://" + domain + "/cameras/subscribe/ " + str(myFilter.selected[0][0]), cookies = Cookies)
+	tkn = response1.content.decode()
+	tkn = tkn.replace('"','')
+	camLink = "https://camera.volganet.ru/cameras/player/" + str(myFilter.selected[0][0]) + "?publictoken=" + tkn
+	my_video.rows.append([camLink])
+	my_video.values[0].append(1)
+else:
+	my_video.rows.append(["Пусто"])
+	my_video.values[0].append(0)
+
+#-Карта- 
+my_chart = DataFrame()
+my_chart.values = [[]]
+my_chart.cols = [['Камеры']]
+my_chart.rows = []
+    
+for dimensionElement in camers:
+	my_chart.rows.append([dimensionElement['id'], dimensionElement['name'], dimensionElement['regionId'], dimensionElement['typeId'], dimensionElement['address'], dimensionElement['origin'], dimensionElement['longittude'], dimensionElement['lattitude']])
+	my_chart.values[0].append(1)
+#https://camera.volganet.ru/cameras/subscribe/1065
