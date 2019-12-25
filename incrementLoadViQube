@@ -1,0 +1,376 @@
+from pprint import pprint
+import requests
+import numpy as np
+import pandas as pd
+import sys
+import os
+import datetime
+import time
+#import xmltodict
+import xml.etree.ElementTree as ET
+from suds.client import Client
+from suds.sudsobject import asdict
+import random
+import logging
+from loader_settings import *
+
+# объявление дат начала и конца периода выгрузки
+# дата окончания периода - всегда текущая дата 
+# в случае полной загрузки дата начала периода - 1 января 2017  
+# в случае инкрементальной загрузки дата начала периода - дата, смещенная назад от текущей даты на значение переменной period_of_incremental_load
+enddate = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+if isFullLoad:
+    startdate = '2017-01-01 15:30:00'
+else:
+    startdate = str(pd.to_datetime(enddate) + pd.DateOffset(days=-period_of_incremental_load))
+
+# проверка наличия и попытка создать директорию с логами 
+if not os.path.exists(path_to_log_directory):
+    try:
+        os.makedirs(path_to_log_directory) 
+    except BaseException:
+        logging.error("Не удалось создать директорию для логов (переменная path_to_log_directory в настроечном файле): " + path_to_log_directory + " \n Возможно, не хватает прав. Создайте вручную или отредактируйте права.")
+    
+# параметры логирования 
+logName = str(datetime.datetime.now().strftime("%Y%m%d%H%M%S")) + "_loadingLog.log" # наименование файла 
+logging.basicConfig(filename=path_to_log_directory + logName, level=logging.INFO) 
+logging.info("\n Начало работы скрипта : " + str(datetime.datetime.now()) + \
+    "\n Загрузка данных за период с \n            " + str(startdate) + " по \n            " + str(enddate))
+
+# для проверки времени выполнения 
+start_time = time.ctime()
+
+def get_auth_token(schema, host, user, pwd):
+    """
+    Возвращает аутентификационный токен,
+    позволяющий выполнять последующие запросы к ViQube
+    """
+
+    response = requests.request(
+        "POST",
+        f"{schema}://{host}/idsrv/connect/token",
+        headers={
+            "Authorization": "Basic dmlxdWJlYWRtaW5fcm9fY2xpZW50OjcmZEo1UldwVVMkLUVVQE1reHU=",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        data={
+            "grant_type": "password",
+            "scope": "openid profile email roles viqubeadmin_api viqube_api",
+            "response_type": "id_token token",
+            "username": user,
+            "password": pwd,
+        },
+    ).json()
+
+    return response.get("token_type"), response.get("access_token"), response.get("expires_in")
+
+def create_database_records(schema, host, token, database, table, records):
+    """
+    Создаёт записи в таблице ViQube
+    """
+
+    response = requests.request(
+        "POST",
+        f"{schema}://{host}/viqube/databases/{database}/tables/{table}/records",
+        headers={
+            "Authorization": f"{token[0]} {token[1]}",
+            "Content-Type": "application/json",
+            "X-API-VERSION": "2.0",
+        },
+        json=records,
+    )
+
+    assert response.status_code == 200, str(response.content)
+    
+def delete_conditions_records(schema, host, token, database, table, records):
+    """
+    Удаляет записи по условию в таблице ViQube
+    """
+    response = requests.request(
+        "DELETE",
+        f"{schema}://{host}/viqube/databases/{database}/tables/{table}/records",
+        headers={
+            "Authorization": f"{token[0]} {token[1]}",
+            "Content-Type": "application/json",
+            "X-API-VERSION": "2.5",
+        },
+        json=records,
+    )
+    assert response.status_code == 200, str(response.content)
+
+    
+def delete_table_records(schema, host, token, database, table):
+    """
+    удаляет все записи в таблице ViQube
+    """
+
+    response = requests.request(
+        "DELETE",
+        f"{schema}://{host}/viqube/databases/{database}/tables/{table}/records/all",
+        headers={
+            "Authorization": f"{token[0]} {token[1]}",
+            "Content-Type": "application/json",
+            "X-API-VERSION": "2.0",
+        },
+    )
+    assert response.status_code == 200, str(response.content)
+ 
+def object_to_dict(obj):
+    '''
+    Преобразовывает полученный объект suds в dictionary 
+    '''
+    if isinstance(obj, str):
+        return obj
+    data_dict = {}
+    try:
+        all_keys = obj.__dict__.keys()  # vars(obj).keys()
+    except AttributeError:
+        return obj
+    fields = [k for k in all_keys if not k.startswith('_')]
+    for field in fields:
+        val = getattr(obj, field)
+        if isinstance(val, (list, tuple)):
+            data_dict[field] = []
+            for item in val:
+                data_dict[field].append(object_to_dict(item))
+        else:
+            data_dict[field] = object_to_dict(val)
+    return data_dict
+
+def get_table_records(schema, host, token, database, data):
+    """
+    Получаем записи из таблицы ViQube
+    """
+
+    response = requests.request(
+        "POST",
+        f"{schema}://{host}/viqube/databases/{database}/query",
+        headers={
+            "Authorization": f"{token[0]} {token[1]}",
+            "Content-Type": "application/json",
+            "X-API-VERSION": "2.0",
+        },
+        json = data
+    )
+    assert response.status_code == 200, str(response.content)
+    return (response.json())
+
+#Получаем аутентификационный токен для дальнейшей работы с ViQube
+try:
+    token = get_auth_token(schema, host, user, pwd)
+except BaseException:
+    logging.error("Не удалось получить доступ к ViQube. Проверьте настройки подключения.")
+    sys.exit(0)
+
+# Шаблонный датафрейм с координатами 
+template_dict = {'CardId': ['0'], 'Altitude': [0.0],'LapseRadius': [0.0],'Latitude':[0.0], 'Longitude': [0.0]}
+template_df = pd.DataFrame.from_dict(template_dict)
+
+# Пустые DF для наполнения во время цикла: 
+full_112_df = pd.DataFrame(columns=['CardId','IncidentType','Address','HrId','District','LastUpdateTime','IncidentStatus'])
+full_DDS_df = pd.DataFrame(columns=['IdDDSType', 'CardId'])
+full_Coords_df = pd.DataFrame(columns=['CardId','Altitude', 'LapseRadius',	'Latitude', 'Longitude'])
+count_items_in_page = 1000 # количество записей в получаемом пейдже 
+
+# словарь с максимальными значениями индекса в ViQube
+maxKeysValues = {'measureGroup_112_IncFrom112' : 0, 'measureGroup_112_Main112' : 0, 'measureGroup_112_CoordsFrom112' : 0} 
+# в случае полной загрузки - предварительно очищаем ViQube:
+if isFullLoad:
+    delete_table_records(schema, host, token, dbName, 'measureGroup_112_IncFrom112')     
+    delete_table_records(schema, host, token, dbName, 'measureGroup_112_CoordsFrom112')     
+    delete_table_records(schema, host, token, dbName, 'measureGroup_112_Main112')     
+else:
+    # получение максимального значения ключа из таблиц ViQube (только в случае инкрементальной загрузки)
+    for table in list_of_tables:
+        dataMax = {
+            "from": table,
+            "columns": [
+                {
+                    "name" : "indexCol",
+                    "function" : "MAX" 
+                }
+            ]
+        }
+        maxIndex = get_table_records(schema, host, token, dbName, dataMax)['values'] # лист с максимальными значениями для каждой таблицы
+        if len(maxIndex) == 1: # получаем значение максимального индекса, если записи в табл. есть
+            maxIndex = maxIndex[0][0] 
+        else: # получаем значение максимального индекса, если записей в табл. нет
+            maxIndex = 0 
+        maxKeysValues.update({table: maxIndex})  # Дополняем словарь для каждой таблицы 
+try:
+    # создаем клиента suds для работы с SOAP 
+    client = Client(url)
+except BaseException:
+            logging.error("Не удалось получить доступ к WSDL-источнику, расположенному по адресу : " + url)
+            sys.exit(0)
+# перебираем записи по районам и страницам 
+for district_number in district_range:
+    page_number = 0
+    while page_number >= 0: 
+        list_toDf = []
+        coordsInPlace = False
+        try: 
+            result = client.service.StatisticsEvent(SysCode = 'polymed', 
+                                             #startLastUpdate = '2019-11-01 15:30:00', # дата в таком формате 
+                                             startLastUpdate = startdate,
+                                             #endLastUpdate = '2019-12-25 15:30:00',
+                                             endLastUpdate = enddate,
+                                             ddsType = '-1',
+                                             incidentStatus = '-1',
+                                             rajonId = district_number,
+                                             page = page_number+1,
+                                             itemsPerPage = count_items_in_page
+                                             )          
+        except BaseException:
+            logging.error("Не удалось получить доступ к WSDL-источнику, расположенному по адресу : " + url)
+            sys.exit(0)
+        dict_res = object_to_dict(result)
+        for key, value in dict_res.items():
+            if key == 'Data':
+                data_temp = value    
+                #print ("Размер словаря: \n " + str(len(data_temp)))
+                if len(data_temp) != 0: # если пришёл пейдж с данными 
+                    for key, value in data_temp.items():
+                        if key == 'StatisticEvent':
+                            data_dict = value
+                            #print ("Размер словаря с данными : \n " + str(len(data_dict)))
+                            if len(data_dict) < count_items_in_page:
+                                page_number = -1
+                            else:
+                                page_number = page_number+1
+                            # проверка на то, что в данных есть координаты (в дальнейшнем в случае их отсутствия добавляются пустые данные)
+                            for count_cells in range(len(data_dict)-1):
+                                if ('Coordinates' in data_dict[count_cells].keys()): #or ('Coordinates' in data_dict[1].keys()) or ('Coordinates' in data_dict[2].keys()):
+                                    coordsInPlace = True
+                            list_toDf = list(data_dict)
+        
+        logging.info("Начинаем обрабатывать данные по " + (str(page_number) if page_number != -1 else str(page_number+2)) + " странице района номер " + str(district_number) + ".")
+        isEmpty = True
+        if len(list_toDf) <= 0:
+            isEmpty = False
+            logging.warning("Данные по "  + (str(page_number) if page_number != -1 else str(page_number+2)) \
+                                            + " странице района номер " + str(district_number) \
+                                            + " не загрузились. Возможно, записей за этот период в данном районе нет. ")
+            break
+        try:
+            dataframe_fromDict = pd.DataFrame(list_toDf) # СЫРОЙ ДАТАФРЕЙМ ДЛЯ ТРАНСФОРМАЦИИ
+            if not coordsInPlace:
+                df_CoordsFinal = template_df # дефолтный датафрейм с координатами   
+            if coordsInPlace:
+                partOfCoords = dataframe_fromDict[['CardId','Coordinates']]
+                partOfCoordsOk = partOfCoords['Coordinates'].apply(pd.Series)     
+                #df_CoordsFinal = pd.concat([partOfCoords, partOfCoordsOk], axis = 1).drop('Coordinates', axis = 1).fillna(0).drop(0, axis = 1)
+                df_CoordsFinal = pd.concat([partOfCoords, partOfCoordsOk], axis = 1, sort=True).drop('Coordinates', axis = 1).fillna(0)
+            df_partOfOtherInfo_tmp = dataframe_fromDict[['CardId', 'IncidentType', 'Address', 'HrId', 'District', 'LastUpdateTime', 'IncidentStatus']]
+            df_partOfOtherInfo = df_partOfOtherInfo_tmp.replace(regex=["\(RegionId: \)"], value='')           
+            partOfDDS = dataframe_fromDict[['CardId','DdsTypes']]
+            partOfDDS['DdsTypes'] = partOfDDS['DdsTypes'].astype(str)
+            partOfDDS['DdsTypes1'] = partOfDDS['DdsTypes'].replace(["{'int': ", ''], ["}", ''] )
+            partOfDDS['C'] = partOfDDS['DdsTypes1'].str.replace("{'int': ", '', regex=True)
+            partOfDDS['D'] = partOfDDS['C'].str.replace("}", '', regex=True)
+            partOfDDS['E'] = partOfDDS['D'].str.replace("[", '', regex=True).replace("]", '', regex=True)
+            a = pd.DataFrame.from_records(partOfDDS.E.tolist()).stack().reset_index(level=1, drop=True).rename('E')    
+            del dataframe_fromDict['DdsTypes'] 
+            partOfDDS = partOfDDS.drop(['DdsTypes1', 'DdsTypes', 'D', 'C'], axis=1)
+            df_ = partOfDDS
+            result_expanded_DDS = pd.DataFrame([(d, tup.CardId) for tup in df_.itertuples() for d in tup.E])
+            result_expanded_DDS.columns=['IdDDSType', 'CardId']
+            df_DDS = result_expanded_DDS[result_expanded_DDS['IdDDSType'].isin(dds_types_range)]
+                
+            # Итерационная склейка датафреймов для последующей загрузки в ViQube
+            full_112_df = pd.concat([full_112_df,df_partOfOtherInfo]).drop_duplicates().reset_index(drop=True)
+            full_DDS_df = pd.concat([full_DDS_df,df_DDS]).drop_duplicates().reset_index(drop=True)
+            full_Coords_df = pd.concat([full_Coords_df,df_CoordsFinal], sort=True).drop_duplicates().reset_index(drop=True)
+            partOfDDS.reset_index
+            #del a      
+        except:
+            logging.error("Не удалось обработать данные по "  + str(page_number+1) + " странице района номер " + str(district_number))
+            break
+# ПОДГОТОВКА ТАБЛИЦ ДЛЯ ЗАГРУЗКИ В VIQUBE #
+################## Формирование виртуальной таблицы координат ##################
+full_Coords_df = full_Coords_df[['CardId', 'Altitude', 'LapseRadius', 'Latitude', 'Longitude']].fillna(0.0)
+full_Coords_df = pd.merge(full_Coords_df, full_112_df[['CardId', 'LastUpdateTime']], on='CardId', how='left', sort=True)
+# Создаем искусственный индекс для возможности обновления данных в ViQube
+full_Coords_df['indexCol'] = full_Coords_df.index + maxKeysValues.get('measureGroup_112_CoordsFrom112') + 1
+full_Coords_df = full_Coords_df[['CardId', 'Altitude', 'LapseRadius', 'Latitude', 'Longitude', 'indexCol']]
+logging.info("Подготовлен DataFrame с координатами (таблица measureGroup_112_CoordsFrom112)")
+############ Формирование виртуальной таблицы вызванных служб ##################
+full_DDS_df['DDSName'] = full_DDS_df['IdDDSType'].map(mapping)
+full_DDS_df = pd.merge(full_DDS_df, full_112_df[['CardId', 'LastUpdateTime']], on='CardId', how='left')
+# Создаем искусственный индекс для возможности обновления данных в ViQube
+full_DDS_df['indexCol'] = full_DDS_df.index + maxKeysValues.get('measureGroup_112_IncFrom112') + 1
+full_DDS_df['Date'] = full_DDS_df['LastUpdateTime']
+del full_DDS_df['LastUpdateTime']
+logging.info("Подготовлен DataFrame таблицей вызванных служб (таблица measureGroup_112_IncFrom112)")
+################## Формирование виртуальной таблицы инцидентов ##################
+# Создаем искусственный индекс для возможности обновления данных в ViQube
+full_112_df['indexCol'] = full_112_df.index + maxKeysValues.get('measureGroup_112_Main112') + 1
+logging.info("Подготовлен DataFrame с инцидентами (таблица measureGroup_112_Main112).")
+
+# список уникальных CardId, по которым было обновление за выгруженны период
+uniqueCardId = full_112_df.CardId.unique().tolist()
+
+if not isFullLoad:
+    # запрос в базу по обновляемым CardId (получаем те indexCols, которые соответствуют тем CardId, которые были изменены)
+    for table in list_of_tables:
+        deletedRecords = 0
+        logging.info("\n Начинаем обновлять данные в таблице " + str(table))
+        data = {
+            "from": table,
+            "columns": [
+                {
+                    "name": "indexCol"
+                }
+            ],
+            "where": [
+                {
+                    "column": "CardId",
+                    "operator": "IN",
+                    "value":uniqueCardId
+                }
+            ]
+        }
+        # получаем те индексы из БД, которые нужно удалить  
+        indexListToDel = get_table_records(schema, host, token, dbName, data)
+        valuesForDeleteTmp = indexListToDel['values']
+        
+        # удаление записей из базы для последующего их обновления
+        for sublist in valuesForDeleteTmp:
+            try:
+                delete_conditions_records(schema, host, token, dbName, table, sublist)   
+                deletedRecords = deletedRecords + 1
+            except:
+                logging.error(" \n Не удалось удалить из таблицы " + str(table) + " запись " + str (sublist))
+        logging.info("\n В таблице " + str(table) + " удалены " + str(deletedRecords) + " записей.")
+
+#Удаление и загрузка данных в ViQube'''
+load_start_time = time.ctime()
+
+# Датафреймы в листы (по-другому ViQube не умеет загружать)
+df_Coords_list = full_Coords_df.values.tolist()
+df_main_list = full_112_df.values.tolist()
+df_Inc_list = full_DDS_df.values.tolist()
+
+# Загружаем таблицы координат
+logging.info("\n Начинаем загружать данные в таблице " + "measureGroup_112_CoordsFrom112")
+try:
+    create_database_records(schema, host, token, dbName, "measureGroup_112_CoordsFrom112", {"values":df_Coords_list})
+except:
+    logging.error(" \n Не удалось загрузить данные в таблицу measureGroup_112_CoordsFrom112")
+
+# Загружаем основную таблицу
+logging.info("\n Начинаем загружать данные в таблице " + "measureGroup_112_Main112")
+try:
+    create_database_records(schema, host, token, dbName, "measureGroup_112_Main112", {"values":df_main_list})
+except:
+    logging.error(" \n Не удалось загрузить данные в таблицу measureGroup_112_Main112")
+
+# Загружаем таблицу инцидентов
+logging.info("\n Начинаем загружать данные в таблице " + "measureGroup_112_IncFrom112")
+try:
+    create_database_records(schema, host, token, dbName, "measureGroup_112_IncFrom112", {"values":df_Inc_list})
+except:
+    logging.error(" \n Не удалось загрузить данные в таблицу measureGroup_112_IncFrom112")
+
+end_time = time.ctime()
+logging.info(" \n  ######### СКРИПТ УСПЕШНО ОТРАБОТАЛ. ВРЕМЯ ВЫПОЛНЕНИЯ С  :  " + str(start_time) + " ПО " + str(end_time)) 
