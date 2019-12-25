@@ -1,0 +1,62 @@
+# -*- coding: utf-8 -*-
+
+# Указываем, необходима полная загрузка данных или инкрементальная
+# В случае инкрементальной загрузки (т.е. ifFullLoad = False)скрипт получит данные за то последнее количество дней, которое указано в переменной period_of_incremental_load,
+# и обновит их в ViQube 
+# В случае ifFullLoad = True - база данных ViQube полностью очистится и заново загрузятся данные с 01.01.2017 по текущую дату
+isFullLoad = True 
+
+# путь к папке с логами (относительно папки со скриптом)
+path_to_log_directory = r"logs\\"
+
+# периодичность загрузки 
+period_of_incremental_load = 2 
+
+# Адрес WSDL-источника данных
+url="http://rd.iskrauraltel.ru:22447/eiim-cntr-generic/Integration112?wsdl"
+
+# данные для подключения к песочнице (последняя незакомментированная запись будет являться действующей)
+schema = 'http'
+host = '87.245.142.207'
+user = 'admin'
+pwd = '123456'
+dbName = 'DB'
+
+'''
+# данные для подключения к prod-серверу 
+schema = 'https'
+host = 'city.polymedia.ru'
+user = 'Partner'
+pwd = 'Partner123'
+dbName = 'city'
+'''
+
+# Шаблон для отрисовки df в браузере (при отладке) 
+html_string = '''
+<html>
+  <head><title>HTML Pandas Dataframe with CSS</title></head>
+  <link rel="stylesheet" type="text/css" href="df_style.css"/>
+  <body>
+    {table}
+  </body>
+</html>.
+'''
+
+# список типов действующих видов вызванных служб
+dds_types_range = ['1','2','3','4','5','6','7','8']
+
+# маппинг для добавления столбца с наименованиями служб
+mapping = {'1':'Пожарные',
+           '2':'Полиция',
+           '3':'Скорая',
+           '4':'Газ',
+           '5':'ЕДДС',
+           '6':'Служба 112',
+           '7':'ЖКХ',
+           '8':'Антитеррор' }
+           
+# перечень ID районов, перечисленных в источнике (необходимо изменить в случае добавления или изменения районов в WSDL-источнике)           
+district_range = [1,2,3,4,5,6,7]
+
+# список таблиц в ViQube 
+list_of_tables = ['measureGroup_112_IncFrom112', 'measureGroup_112_Main112', 'measureGroup_112_CoordsFrom112']
